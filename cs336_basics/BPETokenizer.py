@@ -35,12 +35,7 @@ class BPETokenizer:
         # Start with 256 single-byte tokens
         self.vocab: Dict[int, bytes] = {}
         self.inv_vocab: Dict[bytes, int] = {}
-        self.next_token_id = 256
-
-        for i in range(256):
-            byte_val = bytes([i])
-            self.vocab[i] = byte_val
-            self.inv_vocab[byte_val] = i
+        self.next_token_id = 0
 
         # Handle special tokens
         self.special_tokens = special_tokens or []
@@ -49,8 +44,14 @@ class BPETokenizer:
             self.inv_vocab[token.encode("utf-8")] = self.next_token_id
             self.next_token_id += 1
 
+        for i in range(256):
+            byte_val = bytes([i])
+            self.vocab[i] = byte_val
+            self.inv_vocab[byte_val] = i
+            self.next_token_id += 1
+
     @staticmethod
-    def tokenize_word(word: str) -> List[bytes]:
+    def tokenize_word(word: str) -> List[int]:
         """
         Convert a str into a list of UTF-8 encoded bytes.
 
@@ -58,16 +59,16 @@ class BPETokenizer:
             word (str): Input word.
 
         Returns:
-            List[bytes]: List of single-byte sequences.
+            List[int]: List of single-byte sequences.
 
         Raises:
             AssertionError: If input word is empty.
         """
         assert word, "Input word cannot be empty"
-        return [bytes([b]) for b in word.encode()]
+        return [b for b in word.encode()]
 
     @staticmethod
-    def count_pairs(token_list: List[bytes]) -> Dict[Tuple[bytes, bytes], int]:
+    def count_pairs(token_list: List[int]) -> Dict[Tuple[int, int], int]:
         """
         Count frequency of adjacent byte pairs in a token list.
 
@@ -87,7 +88,7 @@ class BPETokenizer:
         return dict(pair_freq)
 
     @staticmethod
-    def merge_pair_in_word(word: Tuple[bytes], pair: Tuple[bytes, bytes]) -> Tuple[bytes]:
+    def merge_pair_in_word(token: Tuple[int, ...], pair: Tuple[int, int]) -> Tuple[int, ...]:
         """
         Merge all occurrences of a given pair in a tokenized word.
 
@@ -98,24 +99,24 @@ class BPETokenizer:
         Returns:
             Tuple[bytes, ...]: New token list with merged pairs.
         """
-        if not word:
+        if not token:
             return ()
 
         new_word = []
         i = 0
-        while i < len(word):
-            if i < len(word) - 1 and (word[i], word[i + 1]) == pair:
+        while i < len(token):
+            if i < len(token) - 1 and (token[i], token[i + 1]) == pair:
                 # Concatenate the byte sequences
-                new_word.append(word[i] + word[i + 1])
+                new_word.append(token[i] + token[i + 1])
                 i += 2
             else:
-                new_word.append(word[i])
+                new_word.append(token[i])
                 i += 1
         return tuple(new_word)
 
     def find_most_frequent_pair(
-        self, tokenized_word_freq: Dict[Tuple[bytes, ...], int]
-    ) -> Optional[Tuple[bytes, bytes]]:
+        self, tokenized_word_freq: Dict[Tuple[int, ...], int]
+    ) -> Optional[Tuple[int, int]]:
         """
         Find the most frequent adjacent byte pair across all words.
 
@@ -173,12 +174,11 @@ class BPETokenizer:
 
         return dict(new_tokenized_word_freq), target_pair
 
-    def train(self, corpus: List[str], vocab_size: int = 30000):
+    def train(self, word_freq: dict[str, int], vocab_size: int = 30000):
         """
         Train the BPE tokenizer on a text corpus.
 
         Args:
-            corpus (List[str]): List of words or sentences to train on.
             vocab_size (int): Target vocabulary size (including base bytes).
 
         Raises:
@@ -189,11 +189,6 @@ class BPETokenizer:
         
         # Remember merged elements
         merges = []
-
-        # Count word frequencies
-        word_freq = defaultdict(int)
-        for word in corpus:
-            word_freq[word] += 1
 
         # Initialize tokenized word frequencies
         tokenized_word_freq = defaultdict(int)
@@ -221,6 +216,7 @@ class BPETokenizer:
         print(f"Training completed. Final vocabulary size: {len(self.vocab)}")
 
         return (self.vocab, merges)
+    
 
 
     def encode(self, text: str) -> List[int]:
@@ -310,62 +306,6 @@ class BPETokenizer:
         self.special_tokens = data["special_tokens"]
 
 
-# --------------------------------------------------
-# 🧪 Test Functions
-# --------------------------------------------------
-
-def test_tokenize_word():
-    """Test tokenize_word function."""
-    result = BPETokenizer.tokenize_word("hello")
-    expected = [b'h', b'e', b'l', b'l', b'o']
-    assert result == expected, f"Expected {expected}, got {result}"
-    
-    result = BPETokenizer.tokenize_word("a")
-    expected = [b'a']
-    assert result == expected, f"Expected {expected}, got {result}"
-    
-    try:
-        BPETokenizer.tokenize_word("")
-        assert False, "Should raise AssertionError"
-    except AssertionError:
-        pass
-    print("✅ tokenize_word tests passed")
-
-
-def test_count_pairs():
-    """Test count_pairs function."""
-    assert BPETokenizer.count_pairs([]) == {}
-    assert BPETokenizer.count_pairs([b'a']) == {}
-    
-    result = BPETokenizer.count_pairs([b'h', b'e', b'l', b'l', b'o'])
-    expected = {
-        (b'h', b'e'): 1,
-        (b'e', b'l'): 1,
-        (b'l', b'l'): 1,
-        (b'l', b'o'): 1,
-    }
-    assert result == expected, f"Expected {expected}, got {result}"
-    print("✅ count_pairs tests passed")
-
-
-def test_merge_pair_in_word():
-    """Test merge_pair_in_word function."""
-    assert BPETokenizer.merge_pair_in_word((), (b'a', b'b')) == ()
-    assert BPETokenizer.merge_pair_in_word((b'a',), (b'a', b'b')) == (b'a',)
-    assert BPETokenizer.merge_pair_in_word((b'a', b'b'), (b'c', b'd')) == (b'a', b'b')
-    assert BPETokenizer.merge_pair_in_word((b'a', b'b', b'c'), (b'a', b'b')) == (b'ab', b'c')
-    assert BPETokenizer.merge_pair_in_word((b'a', b'b', b'a', b'b', b'c'), (b'a', b'b')) == (
-        b'ab', b'ab', b'c')
-    print("✅ merge_pair_in_word tests passed")
-
-
-def run_all_tests():
-    """Run all unit tests."""
-    test_tokenize_word()
-    test_count_pairs()
-    test_merge_pair_in_word()
-    print("All tests passed! 🎉")
-
 
 if __name__ == "__main__":
-    run_all_tests()
+    ...

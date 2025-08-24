@@ -593,7 +593,7 @@ def run_train_bpe(
     # raise NotImplementedError
 
     from cs336_basics.BPETokenizer import BPETokenizer
-    from cs336_basics.TextPreprocess import TextPreprocessor
+    from cs336_basics.TextPreprocessor import TextPreprocessor
 
     custom_preprocessor = TextPreprocessor(
             remove_tokens=special_tokens,
