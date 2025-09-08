@@ -6,9 +6,13 @@ Description: Byte Pair Encoding (BPE) tokenizer implementation with full trainin
 """
 
 from collections import defaultdict
-from typing import Dict, List, Tuple, Optional, Union
+from typing import Dict, List, Tuple, Optional, Union, Set
 import json
+import regex as re
+# import logging
 
+# logging.basicConfig(filename='bpe_tokenizer.log', level=logging.INFO)
+# logger = logging.getLogger(__name__)
 
 class BPETokenizer:
     """
@@ -46,29 +50,16 @@ class BPETokenizer:
 
         for i in range(256):
             byte_val = bytes([i])
-            self.vocab[i] = byte_val
-            self.inv_vocab[byte_val] = i
+            self.vocab[self.next_token_id] = byte_val
+            self.inv_vocab[byte_val] = self.next_token_id
             self.next_token_id += 1
 
-    @staticmethod
-    def tokenize_word(word: str) -> List[int]:
-        """
-        Convert a str into a list of UTF-8 encoded bytes.
-
-        Args:
-            word (str): Input word.
-
-        Returns:
-            List[int]: List of single-byte sequences.
-
-        Raises:
-            AssertionError: If input word is empty.
-        """
-        assert word, "Input word cannot be empty"
-        return [b for b in word.encode()]
+    def bytes2id(self, word: str):
+        assert word
+        return tuple([b + len(self.special_tokens) for b in word.encode(errors='ignore')])
 
     @staticmethod
-    def count_pairs(token_list: List[int]) -> Dict[Tuple[int, int], int]:
+    def count_pairs(ids: List[int]) -> Dict[Tuple[int, int], int]:
         """
         Count frequency of adjacent byte pairs in a token list.
 
@@ -78,44 +69,44 @@ class BPETokenizer:
         Returns:
             Dict[Tuple[bytes, bytes], int]: Dictionary mapping byte pairs to their frequencies.
         """
-        if len(token_list) < 2:
+        if len(ids) < 2:
             return {}
 
         pair_freq = defaultdict(int)
-        for i in range(len(token_list) - 1):
-            pair = (token_list[i], token_list[i + 1])
+        for pair in zip(ids, ids[1:]):
             pair_freq[pair] += 1
+
         return dict(pair_freq)
 
     @staticmethod
-    def merge_pair_in_word(token: Tuple[int, ...], pair: Tuple[int, int]) -> Tuple[int, ...]:
+    def merge_pair_in_word(ids: Tuple[int, ...], pair: Tuple[int, int], id: int) -> Tuple[int, ...]:
         """
         Merge all occurrences of a given pair in a tokenized word.
 
         Args:
-            word (Tuple[bytes, ...]): Tokenized word as list of byte sequences.
-            pair (Tuple[bytes, bytes]): The pair of tokens to merge.
+            word (Tuple[int, ...]): Tokenized word as list of byte sequences.
+            pair (Tuple[int, int]): The pair of tokens to merge.
 
         Returns:
-            Tuple[bytes, ...]: New token list with merged pairs.
+            Tuple[int, ...]: New token list with merged pairs.
         """
-        if not token:
-            return ()
-
+        if len(ids) < 2:
+            return ids
+        # main
         new_word = []
         i = 0
-        while i < len(token):
-            if i < len(token) - 1 and (token[i], token[i + 1]) == pair:
+        while i < len(ids):
+            if i < len(ids) - 1 and (ids[i], ids[i + 1]) == pair:
                 # Concatenate the byte sequences
-                new_word.append(token[i] + token[i + 1])
+                new_word.append(id)
                 i += 2
             else:
-                new_word.append(token[i])
+                new_word.append(ids[i])
                 i += 1
         return tuple(new_word)
 
     def find_most_frequent_pair(
-        self, tokenized_word_freq: Dict[Tuple[int, ...], int]
+        self, pair_freq: Dict[Tuple[int, int], int]
     ) -> Optional[Tuple[int, int]]:
         """
         Find the most frequent adjacent byte pair across all words.
@@ -128,51 +119,43 @@ class BPETokenizer:
         Returns:
             Optional[Tuple[bytes, bytes]]: Most frequent pair, or None if no pairs exist.
         """
-        if not tokenized_word_freq:
-            return None
+        assert pair_freq, 'pair_freq should not be empty'            
 
-        pair_freq = defaultdict(int)
-        for token_tuple, count in tokenized_word_freq.items():
-            token_list = list(token_tuple)
-            part_pairs = self.count_pairs(token_list)
-            for pair, freq in part_pairs.items():
-                pair_freq[pair] += freq * count
-
-        if not pair_freq:
-            return None
-
-        # Sort by frequency (desc), then lexicographically by pair
         sorted_pairs = sorted(
             pair_freq.items(),
-            key=lambda x: (-x[1], x[0][0], x[0][1])  # Negative frequency for descending order
+            key=lambda x: (x[1], tuple(self.vocab[e] for e in x[0])),
+            reverse=True
         )
-        return sorted_pairs[0][0]
+
+        # print('-' * 80)
+        # for e in sorted_pairs[:15]:
+        #     print(e)
+        # print('-' * 80)
+
+        return sorted_pairs[0][0], sorted_pairs[:10]
+
 
     def train_epoch(
-        self, tokenized_word_freq: Dict[Tuple[bytes, ...], int]
-    ) -> Tuple[Optional[Dict[Tuple[bytes, ...], int]], Optional[Tuple[bytes, bytes]]]:
-        """
-        Perform one BPE merge step.
+        self, vocab: Dict[Tuple[int, ...], int], pair_freq: Dict[Tuple[int, int], int], pair_to_words
+    ) -> Tuple[Optional[Dict[Tuple[int, ...], int]], Optional[Tuple[int, int]]]:
+        # logging infomation
 
-        Args:
-            tokenized_word_freq (Dict[Tuple[bytes, ...], int]): Current tokenized word frequencies.
+        # logging.info(f'Training for [next_token_id]: {self.next_token_id}')
+        if not pair_freq:
+            return vocab, pair_freq, pair_to_words, None
+        new_pair, top_10_pairs = self.find_most_frequent_pair(pair_freq)
+        # logging.info(f'Most frequent pair: {new_pair} with frequency {pair_freq[new_pair]}')
+        # logging.info(f'Top 10 pairs: {top_10_pairs}')
+        vocab_out, pair_freq_out, pair_to_words_out = self.merge_vocab_with_cache(
+            vocab, new_pair, pair_freq, pair_to_words)
 
-        Returns:
-            Tuple of:
-                - Updated tokenized word frequencies after merging.
-                - The merged token pair.
-            Returns (None, None) if no merge is possible.
-        """
-        target_pair = self.find_most_frequent_pair(tokenized_word_freq)
-        if not target_pair:
-            return None, None
+        bytes_value = self.vocab[new_pair[0]] + self.vocab[new_pair[1]]
+        self.vocab[self.next_token_id] = bytes_value
+        self.inv_vocab[bytes_value] = self.next_token_id
+        self.next_token_id += 1
+        merge = tuple([self.vocab[id] for id in new_pair])
 
-        new_tokenized_word_freq = defaultdict(int)
-        for token_tuple, count in tokenized_word_freq.items():
-            merged = self.merge_pair_in_word(token_tuple, target_pair)
-            new_tokenized_word_freq[merged] = count
-
-        return dict(new_tokenized_word_freq), target_pair
+        return vocab_out, pair_freq_out, pair_to_words_out, merge
 
     def train(self, word_freq: dict[str, int], vocab_size: int = 30000):
         """
@@ -184,128 +167,120 @@ class BPETokenizer:
         Raises:
             ValueError: If vocab_size <= 256.
         """
-        if vocab_size <= 256:
-            raise ValueError("vocab_size must be greater than 256")
-        
         # Remember merged elements
         merges = []
 
-        # Initialize tokenized word frequencies
-        tokenized_word_freq = defaultdict(int)
-        for word, count in word_freq.items():
-            tokenized = tuple(self.tokenize_word(word))
-            tokenized_word_freq[tokenized] = count
-
-        tokenized_word_freq = dict(tokenized_word_freq)
-        next_id = len(self.vocab)
-
+        vocab = {self.bytes2id(word): freq for word, freq in word_freq.items()}
+        pair_freq, pair_to_words = self.get_status_with_idx(vocab)
         # Iteratively merge until target vocab size
-        while next_id < vocab_size:
-            tokenized_word_freq, merged_pair = self.train_epoch(tokenized_word_freq)
-            if not merged_pair:
+        while self.next_token_id < vocab_size:
+            vocab, pair_freq, pair_to_words, merge = self.train_epoch(vocab, pair_freq, pair_to_words)
+            if not merge:
                 print("No more merges possible.")
                 break
+            merges.append(merge)
 
-            # Add new token to vocabulary
-            merges.append(merged_pair)
-            new_token_bytes = merged_pair[0] + merged_pair[1]
-            self.inv_vocab[new_token_bytes] = next_id
-            self.vocab[next_id] = new_token_bytes
-            next_id += 1
-
-        print(f"Training completed. Final vocabulary size: {len(self.vocab)}")
-
+        # print(f"Training completed. Final vocabulary size: {len(self.vocab)}")
         return (self.vocab, merges)
-    
 
-
-    def encode(self, text: str) -> List[int]:
+    def get_status_with_idx(self, vocab: Dict[Tuple[int, ...], int]) -> Tuple[Dict[Tuple[int, int], int], Dict[Tuple[int, int], Set[Tuple[int, ...]]]]:
         """
-        Encode text into token IDs.
+        Get pair frequencies and build an index mapping pairs to words that contain them.
 
         Args:
-            text (str): Input text to encode.
+            vocab: Dictionary mapping token sequences to their frequencies
 
         Returns:
-            List[int]: List of token IDs.
+            Tuple containing:
+            - pair_freq: Dictionary mapping pairs to their total frequencies
+            - pair_to_words: Dictionary mapping pairs to sets of words containing them
         """
-        # Convert text to bytes and then to list of single-byte tokens
-        byte_tokens = [bytes([b]) for b in text.encode('utf-8')]
-        tokens = tuple(byte_tokens)
-        
-        # Apply all learned merges
-        for token_id in range(256, self.next_token_id):
-            token_bytes = self.vocab[token_id]
-            if len(token_bytes) == 1:  # Skip single bytes
+        pair_freq = defaultdict(int)
+        pair_to_words = defaultdict(set)
+
+        for ids, freq in vocab.items():
+            word_pairs = self.count_pairs(ids)
+            for pair, count in word_pairs.items():
+                pair_freq[pair] += freq * count  # multiply by word frequency
+                pair_to_words[pair].add(ids)
+
+        return dict(pair_freq), dict(pair_to_words)
+
+    def merge_vocab_with_cache(self, vocab_in: Dict[Tuple[int, ...], int],
+                               new_pair: Tuple[int, int],
+                               pair_freq: Dict[Tuple[int, int], int],
+                               pair_to_words: Dict[Tuple[int, int], Set[Tuple[int, ...]]]) -> Tuple[Dict[Tuple[int, ...], int], Dict[Tuple[int, int], int], Dict[Tuple[int, int], Set[Tuple[int, ...]]]]:
+        """
+        Merge vocabulary with cached pair frequencies and indexes.
+
+        Args:
+            vocab_in: Input vocabulary
+            new_pair: Pair to merge
+            pair_freq: Current pair frequencies (will be modified)
+            pair_to_words: Index mapping pairs to words containing them (will be modified)
+
+        Returns:
+            Tuple containing:
+            - vocab_out: Updated vocabulary
+            - updated pair_freq: Updated pair frequencies
+            - updated pair_to_words: Updated pair-to-words index
+        """
+        vocab_out = {}
+        words_to_update = pair_to_words.get(new_pair, set()).copy()
+
+        # Process words that contain the merged pair
+        for ids in words_to_update:
+            if ids not in vocab_in:
                 continue
-                
-            # Find the component bytes that make up this token
-            first_byte = token_bytes[:-1]
-            second_byte = token_bytes[-1:]
-            # In a real implementation, we'd need to track the merge history
-            # For simplicity, we're assuming we can decompose tokens
-            
-            # This is a simplified approach - a complete implementation
-            # would require storing the merge operations
-            new_tokens = []
-            i = 0
-            while i < len(tokens):
-                # This is a simplified merge check
-                if (i < len(tokens) - 1 and 
-                    tokens[i] + tokens[i + 1] == token_bytes):
-                    new_tokens.append(token_bytes)
-                    i += 2
-                else:
-                    new_tokens.append(tokens[i])
-                    i += 1
-            tokens = tuple(new_tokens)
-            
-        # Convert final tokens to IDs
-        return [self.inv_vocab[token] for token in tokens]
 
-    def decode(self, token_ids: List[int]) -> str:
-        """
-        Decode token IDs back to text.
+            freq = vocab_in[ids]
+            new_ids = self.merge_pair_in_word(
+                ids, new_pair, self.next_token_id)
+            vocab_out[new_ids] = freq
 
-        Args:
-            token_ids (List[int]): List of token IDs.
+            # Update pair frequencies and indexes
+            if ids != new_ids:  # Only update if the word actually changed
+                # Remove old pair counts for this word
+                old_word_pairs = self.count_pairs(ids)
+                for old_pair, count in old_word_pairs.items():
+                    if old_pair in pair_freq:
+                        pair_freq[old_pair] -= freq * count
+                        if pair_freq[old_pair] <= 0:
+                            del pair_freq[old_pair]
+                            if old_pair in pair_to_words:
+                                del pair_to_words[old_pair]
+                        else:
+                            if old_pair in pair_to_words:
+                                pair_to_words[old_pair].discard(ids)
 
-        Returns:
-            str: Decoded text.
-        """
-        byte_string = b"".join(self.vocab[token_id] for token_id in token_ids)
-        return byte_string.decode('utf-8', errors='replace')
+                # Add new pair counts for this word
+                new_word_pairs = self.count_pairs(new_ids)
+                for new_pair_local, count in new_word_pairs.items():
+                    if new_pair_local not in pair_freq:
+                        pair_freq[new_pair_local] = 0
+                        pair_to_words[new_pair_local] = set()
+                    pair_freq[new_pair_local] += freq * count
+                    pair_to_words[new_pair_local].add(new_ids)
 
-    def save(self, file_path: str):
-        """
-        Save tokenizer vocabulary to a JSON file.
+        # Copy unchanged words
+        for ids, freq in vocab_in.items():
+            if ids not in words_to_update:
+                vocab_out[ids] = freq
 
-        Args:
-            file_path (str): Path to save the vocabulary.
-        """
-        data = {
-            "vocab": {k: v.hex() for k, v in self.vocab.items()},
-            "inv_vocab": {k.hex(): v for k, v in self.inv_vocab.items()},
-            "special_tokens": self.special_tokens,
-        }
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        # Clean up the merged pair from indexes
+        if new_pair in pair_freq:
+            del pair_freq[new_pair]
+        if new_pair in pair_to_words:
+            del pair_to_words[new_pair]
 
-    def load(self, file_path: str):
-        """
-        Load tokenizer vocabulary from a JSON file.
+        # Clean up empty entries
+        pairs_to_remove = []
+        for pair, word_set in pair_to_words.items():
+            if not word_set or pair not in pair_freq:
+                pairs_to_remove.append(pair)
 
-        Args:
-            file_path (str): Path to the saved vocabulary.
-        """
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        for pair in pairs_to_remove:
+            pair_to_words.pop(pair, None)
+            pair_freq.pop(pair, None)
 
-        self.vocab = {int(k): bytes.fromhex(v) for k, v in data["vocab"].items()}
-        self.inv_vocab = {bytes.fromhex(k): int(v) for k, v in data["inv_vocab"].items()}
-        self.special_tokens = data["special_tokens"]
-
-
-
-if __name__ == "__main__":
-    ...
+        return vocab_out, pair_freq, pair_to_words

@@ -591,16 +591,12 @@ def run_train_bpe(
     """
 
     # raise NotImplementedError
-
-    from cs336_basics.BPETokenizer import BPETokenizer
     from cs336_basics.TextPreprocessor import TextPreprocessor
+    from cs336_basics.BPETokenizer import BPETokenizer
 
-    custom_preprocessor = TextPreprocessor(
-            remove_tokens=special_tokens,
-            encoding='utf-8'
-        )
+    tp = TextPreprocessor(num_processes=8, special_tokens=special_tokens)
+    bpe = BPETokenizer(special_tokens=special_tokens)
 
-    tokens = custom_preprocessor.preprocess_file(input_path)
-
-    bpe = BPETokenizer(special_tokens)
-    a, b = bpe.train(tokens, vocab_size)
+    word_freq = tp.count_words(file_path=input_path)
+    vocab, merges = bpe.train(word_freq, vocab_size=vocab_size)
+    return vocab, merges
