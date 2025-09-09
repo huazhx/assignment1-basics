@@ -14,6 +14,7 @@ import regex as re
 # logging.basicConfig(filename='bpe_tokenizer.log', level=logging.INFO)
 # logger = logging.getLogger(__name__)
 
+
 class BPETokenizer:
     """
     A Byte Pair Encoding (BPE) tokenizer implementation that learns a subword vocabulary
@@ -39,6 +40,8 @@ class BPETokenizer:
         # Start with 256 single-byte tokens
         self.vocab: Dict[int, bytes] = {}
         self.inv_vocab: Dict[bytes, int] = {}
+        self.merges: List[Tuple[bytes, bytes]] = []
+
         self.next_token_id = 0
 
         # Handle special tokens
@@ -119,7 +122,7 @@ class BPETokenizer:
         Returns:
             Optional[Tuple[bytes, bytes]]: Most frequent pair, or None if no pairs exist.
         """
-        assert pair_freq, 'pair_freq should not be empty'            
+        assert pair_freq, 'pair_freq should not be empty'
 
         sorted_pairs = sorted(
             pair_freq.items(),
@@ -127,25 +130,15 @@ class BPETokenizer:
             reverse=True
         )
 
-        # print('-' * 80)
-        # for e in sorted_pairs[:15]:
-        #     print(e)
-        # print('-' * 80)
-
-        return sorted_pairs[0][0], sorted_pairs[:10]
-
+        return sorted_pairs[0][0]
 
     def train_epoch(
         self, vocab: Dict[Tuple[int, ...], int], pair_freq: Dict[Tuple[int, int], int], pair_to_words
     ) -> Tuple[Optional[Dict[Tuple[int, ...], int]], Optional[Tuple[int, int]]]:
-        # logging infomation
 
-        # logging.info(f'Training for [next_token_id]: {self.next_token_id}')
         if not pair_freq:
             return vocab, pair_freq, pair_to_words, None
-        new_pair, top_10_pairs = self.find_most_frequent_pair(pair_freq)
-        # logging.info(f'Most frequent pair: {new_pair} with frequency {pair_freq[new_pair]}')
-        # logging.info(f'Top 10 pairs: {top_10_pairs}')
+        new_pair = self.find_most_frequent_pair(pair_freq)
         vocab_out, pair_freq_out, pair_to_words_out = self.merge_vocab_with_cache(
             vocab, new_pair, pair_freq, pair_to_words)
 
@@ -154,6 +147,7 @@ class BPETokenizer:
         self.inv_vocab[bytes_value] = self.next_token_id
         self.next_token_id += 1
         merge = tuple([self.vocab[id] for id in new_pair])
+        self.merges.append(merge)
 
         return vocab_out, pair_freq_out, pair_to_words_out, merge
 
@@ -167,21 +161,18 @@ class BPETokenizer:
         Raises:
             ValueError: If vocab_size <= 256.
         """
-        # Remember merged elements
-        merges = []
-
         vocab = {self.bytes2id(word): freq for word, freq in word_freq.items()}
         pair_freq, pair_to_words = self.get_status_with_idx(vocab)
         # Iteratively merge until target vocab size
         while self.next_token_id < vocab_size:
-            vocab, pair_freq, pair_to_words, merge = self.train_epoch(vocab, pair_freq, pair_to_words)
+            vocab, pair_freq, pair_to_words, merge = self.train_epoch(
+                vocab, pair_freq, pair_to_words)
             if not merge:
                 print("No more merges possible.")
                 break
-            merges.append(merge)
 
         # print(f"Training completed. Final vocabulary size: {len(self.vocab)}")
-        return (self.vocab, merges)
+        return (self.vocab, self.merges)
 
     def get_status_with_idx(self, vocab: Dict[Tuple[int, ...], int]) -> Tuple[Dict[Tuple[int, int], int], Dict[Tuple[int, int], Set[Tuple[int, ...]]]]:
         """
