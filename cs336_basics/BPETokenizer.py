@@ -135,9 +135,11 @@ class BPETokenizer:
     def train_epoch(
         self, vocab: Dict[Tuple[int, ...], int], pair_freq: Dict[Tuple[int, int], int], pair_to_words
     ) -> Tuple[Optional[Dict[Tuple[int, ...], int]], Optional[Tuple[int, int]]]:
-
+        # If no pairs left to merge, return None
         if not pair_freq:
             return vocab, pair_freq, pair_to_words, None
+        
+        # Find and merge the most frequent pair
         new_pair = self.find_most_frequent_pair(pair_freq)
         vocab_out, pair_freq_out, pair_to_words_out = self.merge_vocab_with_cache(
             vocab, new_pair, pair_freq, pair_to_words)
@@ -216,7 +218,6 @@ class BPETokenizer:
             - updated pair_freq: Updated pair frequencies
             - updated pair_to_words: Updated pair-to-words index
         """
-        vocab_out = {}
         words_to_update = pair_to_words.get(new_pair, set()).copy()
 
         # Process words that contain the merged pair
@@ -227,7 +228,8 @@ class BPETokenizer:
             freq = vocab_in[ids]
             new_ids = self.merge_pair_in_word(
                 ids, new_pair, self.next_token_id)
-            vocab_out[new_ids] = freq
+            # vocab_out[new_ids] = freq
+            vocab_in[new_ids] = freq
 
             # Update pair frequencies and indexes
             if ids != new_ids:  # Only update if the word actually changed
@@ -254,9 +256,15 @@ class BPETokenizer:
                     pair_to_words[new_pair_local].add(new_ids)
 
         # Copy unchanged words
-        for ids, freq in vocab_in.items():
-            if ids not in words_to_update:
-                vocab_out[ids] = freq
+        # for ids, freq in vocab_in.items():
+        #     if ids not in words_to_update:
+        #         vocab_out[ids] = freq
+
+        # Delete changed words
+        for ids in words_to_update:
+            if ids not in vocab_in:
+                continue
+            del vocab_in[ids]
 
         # Clean up the merged pair from indexes
         if new_pair in pair_freq:
@@ -274,4 +282,4 @@ class BPETokenizer:
             pair_to_words.pop(pair, None)
             pair_freq.pop(pair, None)
 
-        return vocab_out, pair_freq, pair_to_words
+        return vocab_in, pair_freq, pair_to_words
