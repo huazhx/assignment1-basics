@@ -229,10 +229,13 @@ class BPETokenizer:
             new_ids = self.merge_pair_in_word(
                 ids, new_pair, self.next_token_id)
             # vocab_out[new_ids] = freq
-            vocab_in[new_ids] = freq
+            
 
             # Update pair frequencies and indexes
             if ids != new_ids:  # Only update if the word actually changed
+                if len(new_ids) > 1:
+                    vocab_in[new_ids] = freq
+                    
                 # Remove old pair counts for this word
                 old_word_pairs = self.count_pairs(ids)
                 for old_pair, count in old_word_pairs.items():
