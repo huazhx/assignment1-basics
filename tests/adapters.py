@@ -559,7 +559,14 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
-    raise NotImplementedError
+    # raise NotImplementedError
+    from cs336_basics.BPETokenizer import BPETokenizer
+    bpe = BPETokenizer(special_tokens=special_tokens)
+    bpe.vocab = vocab.copy()
+    bpe.merges = merges.copy()
+    bpe.inv_vocab = {v: k for k, v in vocab.items()}
+    bpe.next_token_id = max(vocab.keys()) + 1
+    return bpe
 
 
 def run_train_bpe(

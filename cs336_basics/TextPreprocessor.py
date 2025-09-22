@@ -6,15 +6,9 @@ import regex as re
 
 
 class TextPreprocessor:
-    """
-    A class for efficiently counting word frequencies in large text files using multiprocessing.
-    
-    Features:
-    - Handles large files by chunking them for parallel processing
-    - Supports custom special tokens for splitting
-    - Uses regex pattern matching for tokenization
-    - Multiprocessing support for improved performance
-    """
+    '''
+    A class to preprocess(pre_tokenize) text files and make them word_freq or word list.
+    '''
     
     def __init__(self, num_processes: Optional[int] = None, 
                  special_tokens: List[str] = ["<|endoftext|>"], 
@@ -65,6 +59,32 @@ class TextPreprocessor:
                     word_count[match.group()] += 1
         
         return dict(word_count)
+    
+    def _word_finder_worker(self, chunk: str) -> List[str]:
+        """
+        Worker function to find words in a single chunk.
+        
+        Args:
+            chunk: Text chunk to process
+        """
+        words = []
+        
+        if not chunk:
+            return words
+        
+        # Split on special tokens if provided
+        if self.special_tokens:
+            pattern = "|".join(re.escape(token) for token in self.special_tokens)
+            mini_chunks = re.split(pattern, chunk)
+        else:
+            mini_chunks = [chunk]
+        
+        # Find words in each mini chunk
+        for mini_chunk in mini_chunks:
+            if mini_chunk:
+                words.extend(re.findall(self.tokenize_pattern, mini_chunk))
+        
+        return words
     
     @staticmethod
     def _find_chunk_boundaries(
@@ -188,23 +208,3 @@ class TextPreprocessor:
         """
         return sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:n]
 
-
-# Example usage
-if __name__ == '__main__':
-    # Create counter instance
-    counter = TextPreprocessor(num_processes=4)
-    
-    # Count words in a file
-    file_path = '../tests/fixtures/corpus.en'
-    word_frequencies = counter.count_words(file_path)
-    
-    print(f"Total unique words: {len(word_frequencies)}")
-    print(f"Total word count: {sum(word_frequencies.values())}")
-    
-    # Get top 10 most frequent words
-    top_words = counter.get_top_words(word_frequencies, 10)
-    print("\nTop 10 most frequent words:")
-    for word, freq in top_words:
-        print(f"'{word.encode()}': {freq}")
-        print(f"---This is the unicode: {[b for b in word.encode()]}")
-            

@@ -6,14 +6,12 @@ Description: Byte Pair Encoding (BPE) tokenizer implementation with full trainin
 """
 
 from collections import defaultdict
-from typing import Dict, List, Tuple, Optional, Union, Set
+from typing import Dict, List, Tuple, Optional, Union, Set, Iterable
 import json
+import ast
 import regex as re
-# import logging
-
-# logging.basicConfig(filename='bpe_tokenizer.log', level=logging.INFO)
-# logger = logging.getLogger(__name__)
-
+import heapq
+from collections import defaultdict
 
 class BPETokenizer:
     """
@@ -42,6 +40,9 @@ class BPETokenizer:
         self.inv_vocab: Dict[bytes, int] = {}
         self.merges: List[Tuple[bytes, bytes]] = []
 
+        self.PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+
+        self.merge_ranks = []
         self.next_token_id = 0
 
         # Handle special tokens
@@ -286,3 +287,157 @@ class BPETokenizer:
             pair_freq.pop(pair, None)
 
         return vocab_in, pair_freq, pair_to_words
+
+    def _build_merge_ranks(self) -> Dict[Tuple[int, int], int]:
+        """Precompute pair -> rank dict for O(1) lookup."""
+        merge_ranks = {}
+        for rank, (a, b) in enumerate(self.merges):
+            merge_ranks[(self.inv_vocab[a], self.inv_vocab[b])] = rank
+        return merge_ranks
+    
+    def wencode(self, word: str) -> List[int]:
+        """Encode a single word using BPE with heap optimization."""
+
+        def rebuild_heap(word_ids, merge_ranks):
+            heap = []
+            for i in range(len(word_ids) - 1):
+                pair = (word_ids[i], word_ids[i+1])
+                if pair in merge_ranks:
+                    heapq.heappush(heap, (merge_ranks[pair], i, pair))
+            return heap
+        # 0. ensure self.merge_ranks is up to date
+        if len(self.merge_ranks) != len(self.merges):
+            self.merge_ranks = self._build_merge_ranks()
+
+        # 1. Convert word -> byte tokens -> token IDs
+        word_bytes = word.encode("utf-8")
+        word_ids = [self.inv_vocab[bytes([b])] for b in word_bytes]
+
+        # 2. Build initial pairs (with ranks)
+        def get_pairs(ids):
+            return [((ids[i], ids[i+1]), i) for i in range(len(ids)-1)]
+
+        heap = []
+        for pair, i in get_pairs(word_ids):
+            # i is the left index of the pair in the origin word_ids
+            if pair in self.merge_ranks:
+                heapq.heappush(heap, (self.merge_ranks[pair], i, pair))
+
+        # 3. Iteratively merge
+        while heap:
+            rank, i, pair = heapq.heappop(heap)
+
+            # Check still valid (i might be outdated)
+            if i >= len(word_ids)-1 or (word_ids[i], word_ids[i+1]) != pair:
+                continue
+
+            # Merge into new symbol
+            merged_bytes = self.vocab[pair[0]] + self.vocab[pair[1]]
+            assert merged_bytes in self.inv_vocab, "Merged token must exist in vocab!"
+            new_token = self.inv_vocab[merged_bytes]
+
+            # Replace [i, i+1] with new_token
+            # Python List slice assignment
+            word_ids[i:i+2] = [new_token]
+
+            # Push new local pairs into heap
+            if i > 0:
+                new_pair = (word_ids[i-1], word_ids[i])
+                if new_pair in self.merge_ranks:
+                    heapq.heappush(heap, (self.merge_ranks[new_pair], i-1, new_pair))
+            if i < len(word_ids)-1:
+                new_pair = (word_ids[i], word_ids[i+1])
+                if new_pair in self.merge_ranks:
+                    heapq.heappush(heap, (self.merge_ranks[new_pair], i, new_pair))
+                    
+            heap = rebuild_heap(word_ids, self.merge_ranks)
+
+        return word_ids
+    
+    def encode(self, text: str) -> List[int]:
+        """
+        Encode input text using BPE, preserving special tokens.
+
+        Args:
+            text (str): Input text to encode.
+
+        Returns:
+            List[int]: List of token IDs representing the encoded text, with special tokens preserved.
+        """
+        token_ids = []
+        if self.special_tokens:
+            # Build regex to split and capture special tokens
+            sorted_special_tokens = sorted(self.special_tokens, key=len, reverse=True)
+            spat = "|".join(f"({re.escape(token)})" for token in sorted_special_tokens)
+            # Split and keep special tokens
+            chunks = re.split(spat, text)
+            for chunk in chunks:
+                if not chunk:
+                    continue
+                if chunk in self.special_tokens:
+                    # Preserve special token as is
+                    token_id = self.inv_vocab.get(chunk.encode("utf-8"))
+                    if token_id is not None:
+                        token_ids.append(token_id)
+                else:
+                    # Encode normal text
+                    for match in re.finditer(self.PAT, chunk):
+                        token_ids.extend(self.wencode(match.group()))
+        else:
+            # No special tokens, just encode
+            for match in re.finditer(self.PAT, text):
+                token_ids.extend(self.wencode(match.group()))
+        return token_ids
+
+    def encode_iterable(self, iterable: Iterable[str]) -> Iterable[int]:
+        """
+        Lazily encode an iterable of strings and yield token ids one-by-one.
+
+        Previously this returned lists from wencode which made consumers
+        receive lists instead of a flat stream of ints. This yields ints.
+        """
+        for e in iterable:
+            for tid in self.encode(e):
+                yield tid
+
+    def decode(self, ids: List[int]) -> str:
+        decoded_bytes = b"".join([self.vocab[i] for i in ids])
+        return decoded_bytes.decode("utf-8", errors="ignore")
+    
+    def save_merges(self, filename):
+        with open(filename, "w") as f:
+            for a, b in self.merges:
+                f.write(f"{repr(a)} {repr(b)}\n")
+
+    def load_merges(filename):
+        merges = []
+        with open(filename, "r") as f:
+            while line := f.readline():
+                a, b = line.strip().split()
+                merges.append((ast.literal_eval(a), ast.literal_eval(b)))
+        return merges
+    
+    def save_vocab(self, filename):
+        eval_vocab = {str(k): repr(v) for k, v in self.vocab.items()}
+        with open(filename, "w") as f:
+            json.dump(eval_vocab, f)
+
+    def load_vocab(filename):
+        with open(filename, "r") as f:
+            data = json.load(f)
+        restored_vocab = {int(k): ast.literal_eval(v) for k, v in data.items()}
+        return restored_vocab
+    
+    def to_files(self, vocab_filename: str = 'vocab.json', merges_filename: str = 'merges.txt'):
+        self.save_vocab(self.vocab, vocab_filename)
+        self.save_merges(self.merges, merges_filename)
+
+    def from_files(cls, vocab_filename: str = 'vacab.json', merges_filename: str = 'merges.txt', special_tokens = None):
+        vocab = cls.load_vocab(vocab_filename)
+        merges = cls.load_merges(merges_filename)
+        tokenizer = cls(special_tokens=special_tokens)
+        tokenizer.vocab = vocab
+        tokenizer.inv_vocab = {v: k for k, v in vocab.items()}
+        tokenizer.merges = merges
+        tokenizer.next_token_id = max(vocab.keys()) + 1
+        return tokenizer
