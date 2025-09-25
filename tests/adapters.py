@@ -116,7 +116,8 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    from cs336_basics.Transformer import scaled_dot_product_attention
+    return scaled_dot_product_attention(Q, K, V, mask)
 
 
 def run_multihead_self_attention(
@@ -150,8 +151,13 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
-
+    from cs336_basics.Transformer import CasualMultiheadSelfAttention
+    mha = CasualMultiheadSelfAttention(d_model, num_heads)
+    mha.linear_q_k_v.weight.data[:d_model, :] = q_proj_weight
+    mha.linear_q_k_v.weight.data[d_model:2 * d_model, :] = k_proj_weight
+    mha.linear_q_k_v.weight.data[2 * d_model:, :] = v_proj_weight
+    mha.linear_out.weight.data = o_proj_weight
+    return mha(in_features)
 
 def run_multihead_self_attention_with_rope(
     d_model: int,
@@ -212,7 +218,9 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    from cs336_basics.Transformer import RotaryPositionalEmbedding
+    rope = RotaryPositionalEmbedding(theta, d_k, max_seq_len)
+    return rope(in_query_or_key, token_positions)
 
 
 def run_transformer_block(
@@ -446,8 +454,8 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
-
+    from cs336_basics.Transformer import softmax
+    return softmax(in_features, dim)
 
 def run_cross_entropy(
     inputs: Float[Tensor, " batch_size vocab_size"], targets: Int[Tensor, " batch_size"]
