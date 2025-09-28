@@ -196,8 +196,15 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
-
+    from cs336_basics.Transformer import RotaryPositionalEmbedding, CasualMultiheadSelfAttention
+    mha = CasualMultiheadSelfAttention(d_model, num_heads)
+    d_k = d_model // num_heads
+    rope = RotaryPositionalEmbedding(theta, d_k, max_seq_len)
+    mha.linear_q_k_v.weight.data[:d_model, :] = q_proj_weight
+    mha.linear_q_k_v.weight.data[d_model:2 * d_model, :] = k_proj_weight
+    mha.linear_q_k_v.weight.data[2 * d_model:, :] = v_proj_weight
+    mha.linear_out.weight.data = o_proj_weight
+    return mha(in_features, rope=rope, token_positions=token_positions)
 
 def run_rope(
     d_k: int,
@@ -293,7 +300,20 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    from cs336_basics.Transformer import TransformerBlock, RotaryPositionalEmbedding
+    rope = RotaryPositionalEmbedding(theta, d_model // num_heads, max_seq_len)
+    block = TransformerBlock(d_model, num_heads, d_ff)
+    # load state 
+    block.attn.linear_q_k_v.weight.data[:d_model, :] = weights['attn.q_proj.weight']
+    block.attn.linear_q_k_v.weight.data[d_model:2 * d_model, :] = weights['attn.k_proj.weight']
+    block.attn.linear_q_k_v.weight.data[2 * d_model:, :] = weights['attn.v_proj.weight']
+    block.attn.linear_out.weight.data = weights['attn.output_proj.weight']
+    block.norm1.scale.data = weights['ln1.weight']
+    block.pwff.linear1.weight.data = weights['ffn.w1.weight']
+    block.pwff.linear2.weight.data = weights['ffn.w2.weight']
+    block.pwff.linear3.weight.data = weights['ffn.w3.weight']
+    block.norm2.scale.data = weights['ln2.weight']
+    return block(in_features, rope, None)
 
 
 def run_transformer_lm(
@@ -375,7 +395,23 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    from cs336_basics.Transformer import TransformerLM
+    
+    model = TransformerLM(vocab_size, context_length, d_model, num_layers, num_heads, d_ff, theta=rope_theta)
+    model.token_embedding.weight.data = weights['token_embeddings.weight']
+    model.norm.scale.data = weights['ln_final.weight']
+    for num in range(num_layers):
+        model.layers[num].attn.linear_q_k_v.weight.data[:d_model, :] = weights[f'layers.{num}.attn.q_proj.weight']
+        model.layers[num].attn.linear_q_k_v.weight.data[d_model:2 * d_model, :] = weights[f'layers.{num}.attn.k_proj.weight']
+        model.layers[num].attn.linear_q_k_v.weight.data[2 * d_model:, :] = weights[f'layers.{num}.attn.v_proj.weight']
+        model.layers[num].attn.linear_out.weight.data = weights[f'layers.{num}.attn.output_proj.weight']
+        model.layers[num].norm1.scale.data = weights[f'layers.{num}.ln1.weight']
+        model.layers[num].pwff.linear1.weight.data = weights[f'layers.{num}.ffn.w1.weight']
+        model.layers[num].pwff.linear2.weight.data = weights[f'layers.{num}.ffn.w2.weight']
+        model.layers[num].pwff.linear3.weight.data = weights[f'layers.{num}.ffn.w3.weight']
+        model.layers[num].norm2.scale.data = weights[f'layers.{num}.ln2.weight']
+    model.output_linear.weight.data = weights['lm_head.weight']
+    return model(in_indices)
 
 
 def run_rmsnorm(

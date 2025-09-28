@@ -136,8 +136,11 @@ class RotaryPositionalEmbedding(torch.nn.Module):
         orig_dtype = x.dtype
         # view_as_complex requires a real floating dtype; promote if needed
         x_real = x.to(torch.float32)
+        # ensure the last dim (size=2) has stride 1 for view_as_complex
+        # CAUTION: ensure contiguous memory for view_as_complex
         x_pairs = rearrange(
-            x_real, '... seq_len (d_k p) -> ... seq_len d_k p', p=2)
+            x_real, '... seq_len (d_k p) -> ... seq_len d_k p', p=2).contiguous()
+        # alternative: x_pairs = x_real.reshape(*x_real.shape[:-1], x_real.shape[-1]//2, 2).contiguous()
 
         x_complex = torch.view_as_complex(x_pairs)
         # ...use x_complex...
@@ -201,20 +204,108 @@ class CasualMultiheadSelfAttention(torch.nn.Module):
         self.d_k = d_model // num_heads
         # suppose d_v = d_k
         self.d_v = self.d_k                                     # set d_v = d_k
-        self.linear_q_k_v = Linear(d_model, 2 * d_model + self.d_v)
-        self.linear_out = Linear(self.d_v * num_heads, d_model)
+        self.linear_q_k_v = Linear(d_model, d_model * 3)
+        self.linear_out = Linear(d_model, d_model)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, rope: Optional[RotaryPositionalEmbedding] = None, token_positions: torch.Tensor = None) -> torch.Tensor:
         qkv = self.linear_q_k_v(x)
-        q, k, v = rearrange(
-            qkv, 'batch seq (head d) -> batch head seq d', head=self.num_heads, d=self.d_k,
-        ).chunk(3, dim=-1)
+
+        # CAUTION: Right Shape, Wrong Order
+        # the following line is incorrect because rearrange + chunk is not equivalent to chunk + rearrange
+        # because chunk will split the last dimension into 3 equal parts, which may not be divisible by num_heads
+
+        # (batch, seq, 3*dmodel) -> (batch, head, seq, 3*d_k)
+        # q, k, v = rearrange(
+        #     qkv, 'batch seq (head d) -> batch head seq d', head=self.num_heads,
+        # ).chunk(3, dim=-1)
+        q, k, v = qkv.chunk(3, dim=-1)
+        q = rearrange(q, 'batch seq (head d) -> batch head seq d',
+                      head=self.num_heads)
+        k = rearrange(k, 'batch seq (head d) -> batch head seq d',
+                      head=self.num_heads)
+        v = rearrange(v, 'batch seq (head d) -> batch head seq d',
+                      head=self.num_heads)
+        # (batch, head, seq, d_k)
+
         batch_size, n_heads, seq_len, d_k = q.shape
-        # create casual mask
-        mask = torch.triu(torch.ones(
-            (seq_len, seq_len), device=x.device, dtype=torch.bool), diagonal=1) == 0
+        if rope is not None:
+            if token_positions is None:
+                token_positions = torch.arange(
+                    seq_len, device=x.device).unsqueeze(0)  # (1, seq_len)
+            q = rope(q, token_positions)
+            k = rope(k, token_positions)
+
+        # create causal mask with True = allowed positions (lower triangle incl. diagonal)
+        mask = torch.tril(torch.ones((seq_len, seq_len),
+                          device=x.device, dtype=torch.bool))
         attn = scaled_dot_product_attention(q, k, v, mask=mask)
         attn_merged = rearrange(
             attn, 'batch head seq d -> batch seq (head d)')
         out = self.linear_out(attn_merged)
         return out
+
+
+class TransformerBlock(torch.nn.Module):
+    def __init__(self, d_model: int, num_heads: int, dff: int, device=None, dtype=None):
+        super().__init__()
+        self.attn = CasualMultiheadSelfAttention(d_model, num_heads)
+        self.norm1 = RMSNorm(d_model, device=device, dtype=dtype)
+        self.pwff = PositionWiseFeedForward(
+            d_model, dff, device=device, dtype=dtype)
+        self.norm2 = RMSNorm(d_model, device=device, dtype=dtype)
+
+    def forward(self, x: torch.Tensor, rope: Optional[RotaryPositionalEmbedding] = None, token_positions: torch.Tensor = None) -> torch.Tensor:
+        norm_x = self.norm1(x)
+        # if rope is not None, token_positions None, generate positions with default range
+        attn_out = self.attn(
+            norm_x, rope=rope, token_positions=token_positions)
+        x = x + attn_out
+        norm_x = self.norm2(x)
+        ff_out = self.pwff(norm_x)
+        x = x + ff_out
+        return x
+
+
+class TransformerLM(torch.nn.Module):
+    """
+    A Transformer-based Language Model with Rotary Positional Embeddings.
+
+    Four parts:
+    1. Token Embedding Layer
+    2. Rotary Positional Embedding Layer
+    3. Stacked Transformer Blocks
+    4. Output Linear Layer
+    """
+    def __init__(self, vocab_size: int, context_length: int, d_model: int, n_layers: int, n_heads: int, d_ff: int, theta: float = 10000.0, device=None, dtype=None):
+        super().__init__()
+        self.token_embedding = Embedding(
+            vocab_size, d_model, device=device, dtype=dtype)
+        self.rope = RotaryPositionalEmbedding(
+            theta, d_model // n_heads, context_length, device=device)
+        self.layers = torch.nn.ModuleList([
+            TransformerBlock(d_model, n_heads, d_ff, device=device, dtype=dtype) for _ in range(n_layers)
+        ])
+        self.norm = RMSNorm(d_model, device=device, dtype=dtype)
+        self.output_linear = Linear(
+            d_model, vocab_size, device=device, dtype=dtype)
+        self.max_seq_len = context_length
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, seq_len) with token indices.
+
+        Returns:
+            torch.Tensor: Output logits of shape (batch_size, seq_len, vocab_size).
+        """
+        seq_len = x.shape[-1]
+        assert seq_len <= self.max_seq_len, f"Input sequence length {seq_len} exceeds maximum {self.max_seq_len}"
+
+        x = self.token_embedding(x)                                                 # (batch_size, seq_len, d_model)
+        token_positions = torch.arange(seq_len, device=x.device).unsqueeze(0)       # (1, seq_len)
+        for layer in self.layers:
+            x = layer(x, rope=self.rope, token_positions=token_positions)
+
+        x = self.norm(x)                                                            # (batch_size, seq_len, d_model)
+        logits = self.output_linear(x)                                              # (batch_size, seq_len, vocab_size)
+        return logits
