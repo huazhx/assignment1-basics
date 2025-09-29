@@ -3,6 +3,7 @@ import torch
 from einops import rearrange, einsum, pack
 from torch import linalg as LA
 from typing import Optional
+from collections.abc import Callable, Iterable
 
 
 class Linear(torch.nn.Module):
@@ -309,3 +310,46 @@ class TransformerLM(torch.nn.Module):
         x = self.norm(x)                                                            # (batch_size, seq_len, d_model)
         logits = self.output_linear(x)                                              # (batch_size, seq_len, vocab_size)
         return logits
+
+def cross_entropy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    """
+    Compute the cross-entropy loss between logits and targets.
+
+    Args:
+        logits (torch.Tensor): Logits of shape (batch_size, vocab_size).
+        targets (torch.Tensor): Target token indices of shape (batch_size, ).
+
+    Returns:
+        torch.Tensor: Scalar tensor representing the average cross-entropy loss.
+    """
+    
+    logits = logits - torch.max(logits, dim=-1, keepdim=True).values                # (batch_size, vocab_size)
+    y_predicted = logits[torch.arange(logits.size(0)), targets]                     # (batch_size,)
+    log_sum_exp = torch.log(torch.sum(torch.exp(logits), dim=-1))                   # (batch_size,)
+    loss = -y_predicted + log_sum_exp                                               # (batch_size,)
+    return torch.mean(loss)                                                         # scalar
+
+
+class SGD(torch.optim.Optimizer):
+    def __init__(self, params, lr=1e-3):
+        if lr < 0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        defaults = {"lr": lr}
+        super().__init__(params, defaults)
+
+    def step(self, closure: Optional[Callable] = None):
+        loss = None if closure is None else closure()
+        for group in self.param_groups:
+            lr = group["lr"]  # Get the learning rate.
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                state = self.state[p]  # Get state associated with p.
+                # Get iteration number from the state, or initial value.
+                t = state.get("t", 0)
+                # Get the gradient of loss with respect to p.
+                grad = p.grad.data
+                # Update weight tensor in-place.
+                p.data -= lr / math.sqrt(t + 1) * grad
+                state["t"] = t + 1  # Increment iteration number.
+                return loss
