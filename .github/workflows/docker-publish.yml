@@ -32,5 +32,5 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/xuzhenhua_attention_train:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/xuzhenhua_attention_train:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/cs336_xzh:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/cs336_xzh:${{ github.sha }}

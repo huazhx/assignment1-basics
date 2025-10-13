@@ -28,10 +28,13 @@ ENV PATH="/root/.local/bin:${PATH}"
 
 # 验证 uv 是否安装成功（可选）
 RUN uv --version
-RUN uv sync
 
 # 复制项目文件
 COPY . .
+
+# 拷贝了项目文件才能安装依赖
+RUN uv sync
+
 
 # 默认启动 shell（可按需改为 uv run ...）
 CMD ["/bin/bash"]
