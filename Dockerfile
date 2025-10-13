@@ -28,15 +28,7 @@ ENV PATH="/root/.local/bin:${PATH}"
 
 # 验证 uv 是否安装成功（可选）
 RUN uv --version
-
-# 如果存在 pyproject.toml 或 requirements.txt，则提前安装依赖
-RUN if [ -f pyproject.toml ]; then \
-        uv pip install -r <(uv pip compile pyproject.toml); \
-    elif [ -f requirements.txt ]; then \
-        uv pip install -r requirements.txt; \
-    else \
-        echo "⚠️ No dependency file found. Skipping Python deps install."; \
-    fi
+RUN uv sync
 
 # 复制项目文件
 COPY . .
