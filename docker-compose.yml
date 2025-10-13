@@ -7,8 +7,6 @@ services:
     restart: unless-stopped
     volumes:
       - ./data:/app/data    # 根据需求映射数据目录
-    ports:
-      - "8080:8080"         # 如无 web 服务，可以移除或改端口
     tty: true
     # 使用 sleep infinity 保持容器常驻，便于用 docker exec 进入 bash
     command: ["sleep", "infinity"]

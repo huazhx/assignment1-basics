@@ -3,11 +3,11 @@ __pycache__
 *.pyo
 *.pyd
 .env
-.venv
-venv/
+# .venv
+# venv/
 .git
 .gitignore
-data/
+# data/
 outputs/
 .ipynb_checkpoints
 .DS_Store
